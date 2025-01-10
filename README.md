@@ -4,7 +4,13 @@
 
 该程序依赖于[tinymist](https://github.com/Myriad-Dreamin/tinymist)(预览typst)和[glow](https://github.com/charmbracelet/glow)(预览markdown)，请确保这两个程序已经安装。
 
-# 2. 使用
+# 2. 安装
+  
+```shell
+cargo install noxe
+```
+
+# 3. 使用
 
 ```shell
 noxe new myNote
@@ -13,7 +19,7 @@ noxe preview myNote # 在$NOXE_DIR下查找并预览myNote, $NOXE_DIR默认为�
 noxe preview ./myNote # 查看当前目录下的myNote
 ```
 
-# 3. 笔记的目录结构
+# 4. 笔记的目录结构
 
 文件夹形式的笔记，笔记的默认目录结构如下：
 
@@ -56,6 +62,7 @@ main.md: |
 
 ```
 
-# 4. TODO
+# 5. TODO
 
 - [ ] 支持用户自定义预览笔记的命令
+- [ ] 支持补全，包括`noxe preview`自动补全`$NOXE_DIR`下的笔记名

@@ -2,6 +2,9 @@
 name = "noxe"
 version = "0.1.0"
 edition = "2024"
+author = "sqfzy"
+description = "A simple tool to manage and preview your notes."
+license = "MIT"
 
 [dependencies]
 walkdir = "2"
