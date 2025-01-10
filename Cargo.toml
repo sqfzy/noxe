@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies]
 walkdir = "2"
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive", "env", "cargo"] }
 chrono = "0.4"
 anyhow = "1"
 serde = { version = "1.0.217", features = ["derive"] }

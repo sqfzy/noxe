@@ -1,10 +1,14 @@
-use clap::{Parser, ValueEnum, builder::NonEmptyStringValueParser};
+use clap::{
+    Parser, ValueEnum, builder::NonEmptyStringValueParser, crate_authors, crate_description,
+    crate_name, crate_version,
+};
 
 #[derive(Parser, Debug)]
 #[command(
-    author = "sqfzy",
-    version = "0.1",
-    about = "Create a note with specified options"
+    name = crate_name!(),
+    author = crate_authors!(),
+    version = crate_version!(),
+    about = crate_description!()
 )]
 pub enum Cli {
     #[command(about = "Create a new note")]
