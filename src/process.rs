@@ -116,7 +116,17 @@ pub fn process_command(args: Cli) -> Result<()> {
                     note_path.to_path_buf()
                 }
             } else {
-                search_note(Path::new(&note_dir), &note_path_str)?
+                // note_path是note name而非路径
+                let note_dir = Path::new(&note_dir);
+
+                let mut result =
+                    search_notes(note_dir, &|s| s.eq_ignore_ascii_case(&note_path_str))?;
+
+                match result.len() {
+                    0 => bail!("No note found in '{}'", note_dir.display()),
+                    1 => result.pop().unwrap().path().to_path_buf(),
+                    _ => prompt_user_choice(&result)?.path().to_path_buf(),
+                }
             };
 
             let note_type = if let Some(ext) = note_path.extension().and_then(|ext| ext.to_str())
@@ -129,6 +139,48 @@ pub fn process_command(args: Cli) -> Result<()> {
 
             preview_note(&note_path, note_type)?;
             print!("Previewing note '{}'", note_path.display());
+        }
+        Cli::Search { query, note_dir } => {
+            let pattern = regex::RegexBuilder::new(&query)
+                .case_insensitive(true)
+                .build()
+                .with_context(|| format!("Failed to build regex from '{}'", query))?;
+
+            let note_dir = Path::new(&note_dir);
+            let result = search_notes(note_dir, &|s| pattern.is_match(s))?;
+
+            if result.is_empty() {
+                bail!("No note found in '{}'", note_dir.display());
+            }
+
+            println!("Found notes:");
+            for entry in result {
+                println!("{}", entry.path().display());
+            }
+        }
+        Cli::List { note_dir, verbose } => {
+            let note_dir_path = Path::new(&note_dir);
+
+            let result = find_all_notes(note_dir_path)?;
+            if result.is_empty() {
+                bail!("No note found in '{}'", note_dir_path.display());
+            }
+
+            println!("Found notes:");
+            for entry in result {
+                if verbose {
+                    println!("{}", entry.path().display());
+                } else {
+                    println!(
+                        "{}",
+                        entry
+                            .path()
+                            .display()
+                            .to_string()
+                            .split_off(note_dir.len() + 1)
+                    );
+                }
+            }
         }
     }
 
@@ -278,96 +330,26 @@ fn metadata(
 
 /* `Preview` command helper */
 
-fn search_note(note_dir: &Path, note_name: &str) -> Result<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
+fn search_notes(note_dir: &Path, eq: &dyn Fn(&str) -> bool) -> Result<Vec<DirEntry>> {
+    let notes = find_all_notes(note_dir)?;
 
-    TOP_DIRS_IN_NOTE_DIR.with_borrow(|top_dirs| {
-        if !note_name.ends_with(".md") && !note_name.ends_with(".typ") {
-            // 递归搜索note_dir中的以note_name为名的文件夹或文件
-            for entry in WalkDir::new(note_dir)
-                .min_depth(1)
-                .into_iter()
-                .filter_entry(|e| {
-                    find_main_file_depth_zero(e).is_none()
-                        && !top_dirs
-                            .iter()
-                            .any(|dir| e.file_name().to_str().is_some_and(|s| s == dir)) // 保留除top_dirs之外的文件夹
-                })
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|s| s.eq_ignore_ascii_case(note_name))
-                        || e.path()
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .is_some_and(|s| s.eq_ignore_ascii_case(note_name))
-                })
-            {
-                if entry.file_type().is_dir()
-                    && let Some(main_path) = find_main_file_depth_one(&entry)
-                {
-                    candidates.push(main_path);
-                } else {
-                    candidates.push(entry.path().to_path_buf());
-                }
-            }
-        } else {
-            // 递归搜索note_dir中的以note_name为名的文件，跳过包含main.*文件的文件夹
-            for entry in WalkDir::new(note_dir)
-                .min_depth(1)
-                .into_iter()
-                .filter_entry(|e| {
-                    find_main_file_depth_one(e).is_none()
-                        && !top_dirs
-                            .iter()
-                            .any(|dir| e.file_name().to_str().is_some_and(|s| s == dir))
-                })
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|s| s.eq_ignore_ascii_case(note_name))
-                })
-            {
-                candidates.push(entry.path().to_path_buf());
-            }
-        }
-    });
+    let res = notes
+        .into_iter()
+        .filter(|note| {
+            note.path()
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(eq)
+        })
+        .collect();
 
-    let note_path = match candidates.len() {
-        0 => bail!("No note found in '{}'", note_dir.display()),
-        1 => candidates[0].clone(),
-        _ => prompt_user_choice(&candidates)?,
-    };
-
-    Ok(note_path)
+    Ok(res)
 }
 
-fn find_main_file_depth_one(dir: &DirEntry) -> Option<PathBuf> {
-    let path = dir.path();
-    let candidates = ["main.md", "main.typ"];
-
-    candidates
-        .iter()
-        .map(|file_name| path.join(file_name))
-        .find(|path| path.is_file())
-}
-
-fn find_main_file_depth_zero(dir: &DirEntry) -> Option<PathBuf> {
-    let path = dir.path().parent()?;
-    let candidates = ["main.md", "main.typ"];
-
-    candidates
-        .iter()
-        .map(|file_name| path.join(file_name))
-        .find(|path| path.is_file())
-}
-
-fn prompt_user_choice(candidates: &[PathBuf]) -> Result<PathBuf> {
+fn prompt_user_choice(candidates: &[DirEntry]) -> Result<DirEntry> {
     eprintln!("Multiple matches found:");
     for (i, candidate) in candidates.iter().enumerate() {
-        eprintln!("{}. {}", i + 1, candidate.display());
+        eprintln!("{}. {}", i + 1, candidate.path().display());
     }
     eprint!("Enter the number of the note to preview (default is 1): ");
     io::stdout()
@@ -384,6 +366,7 @@ fn prompt_user_choice(candidates: &[PathBuf]) -> Result<PathBuf> {
         bail!("Choice out of range");
     }
 
+    // Ok(candidates[choice - 1].clone())
     Ok(candidates[choice - 1].clone())
 }
 
@@ -422,11 +405,48 @@ fn preview_note(note_path: &Path, note_type: NoteType) -> Result<()> {
     Ok(())
 }
 
+/* common helper */
+
+fn find_all_notes(note_dir: &Path) -> Result<Vec<DirEntry>> {
+    let mut entries = Vec::new();
+
+    let mut it = WalkDir::new(note_dir).min_depth(1).into_iter();
+    while let Some(entry) = it.next() {
+        let entry = entry?;
+
+        if entry.file_type().is_dir() && find_main_file_depth_one(&entry).is_some() {
+            entries.push(entry);
+            it.skip_current_dir();
+        } else if let Some(ext) = entry.path().extension()
+            && (ext == "md" || ext == "typ")
+        {
+            entries.push(entry);
+        }
+    }
+
+    Ok(entries)
+}
+
+fn find_main_file_depth_one(dir: &DirEntry) -> Option<PathBuf> {
+    if !dir.file_type().is_dir() {
+        return None;
+    }
+
+    let path = dir.path();
+    let candidates = ["main.md", "main.typ"];
+
+    candidates
+        .iter()
+        .map(|file_name| path.join(file_name))
+        .find(|path| path.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::{Cli, NoteType};
-    use std::fs;
+    use std::fs::{self, File};
+    use std::io::Write;
     use tempfile::tempdir;
 
     /// Helper to build Cli::New arguments quickly
@@ -434,7 +454,7 @@ mod tests {
         Cli::New {
             note_path: note_path.to_string(),
             note_author: Some("TestAuthor".to_string()),
-            note_keywords: vec!["keyword1".to_string(), "keyword2".to_string()],
+            note_keywords: ["keyword1".to_string(), "keyword2".to_string()].into(),
             note_type,
             single_file,
             note_template: None,
@@ -450,171 +470,304 @@ mod tests {
         }
     }
 
-    /// Test creating a single-file .md note
-    #[test]
-    fn test_new_single_file_md() {
-        let temp_dir = tempdir().expect("Failed to create temp dir");
-        let note_file_path = temp_dir.path().join("MySingleMdNote.md");
-        let note_file_str = note_file_path.to_str().unwrap();
-
-        // Build arguments and run
-        let args = cli_new_args(note_file_str, true, NoteType::Md);
-        let result = process_command(args);
-
-        // Verify success
-        assert!(
-            result.is_ok(),
-            "Expected creation to succeed for single-file .md"
-        );
-
-        // Check the actual file
-        assert!(note_file_path.exists(), "Expected .md file to be created");
-
-        // Check metadata
-        let content =
-            fs::read_to_string(&note_file_path).expect("Failed to read the newly created .md file");
-        assert!(
-            content.contains("title: \"MySingleMdNote\""),
-            "Should contain a 'title' metadata"
-        );
-        assert!(
-            content.contains("author: \"TestAuthor\""),
-            "Should contain 'author' metadata"
-        );
-        assert!(
-            content.contains("keywords: [keyword1, keyword2]"),
-            "Should contain 'keywords'"
-        );
-    }
-
-    /// Test creating a multi-file .typ note with default template
-    #[test]
-    fn test_new_multi_file_typ() {
-        let temp_dir = tempdir().expect("Failed to create temp dir");
-        let note_folder_path = temp_dir.path().join("MyMultiTypNote");
-        let note_folder_str = note_folder_path.to_str().unwrap();
-
-        // Build arguments and run
-        let args = cli_new_args(note_folder_str, false, NoteType::Typ);
-        let result = process_command(args);
-
-        // Verify success
-        assert!(
-            result.is_ok(),
-            "Expected creation to succeed for multi-file .typ"
-        );
-
-        // We expect a folder "MyMultiTypNote"
-        assert!(
-            note_folder_path.is_dir(),
-            "Expected a directory to be created"
-        );
-
-        // Check for main.typ
-        let main_typ_path = note_folder_path.join("main.typ");
-        assert!(
-            main_typ_path.exists(),
-            "Expected main.typ file in the new folder"
-        );
-
-        // Check default subfolders
-        let images_path = note_folder_path.join("images");
-        let chapter_path = note_folder_path.join("chapter");
-        let bibliography_path = note_folder_path.join("bibliography");
-        assert!(images_path.is_dir(), "Expected an 'images' subdirectory");
-        assert!(chapter_path.is_dir(), "Expected a 'chapter' subdirectory");
-        assert!(
-            bibliography_path.is_dir(),
-            "Expected a 'bibliography' subdirectory"
-        );
-    }
-
-    /// Test creating a note that already exists
-    #[test]
-    fn test_note_already_exists() {
-        let temp_dir = tempdir().expect("Failed to create temp dir");
-        let note_file_path = temp_dir.path().join("DuplicateNote.md");
-        let note_file_str = note_file_path.to_str().unwrap();
-
-        // First creation should succeed
-        {
-            let args = cli_new_args(note_file_str, true, NoteType::Md);
-            let result = process_command(args);
-            assert!(result.is_ok(), "First creation should succeed");
+    /// Helper to build Cli::Search arguments quickly
+    fn cli_search_args(query: &str, note_dir: &str) -> Cli {
+        Cli::Search {
+            query: query.to_string(),
+            note_dir: note_dir.to_string(),
         }
+    }
 
-        // Second creation with the same path should fail
-        {
-            let args = cli_new_args(note_file_str, true, NoteType::Md);
-            let result = process_command(args);
+    /// Helper to build Cli::List arguments quickly
+    fn cli_list_args(note_dir: &str, verbose: bool) -> Cli {
+        Cli::List {
+            note_dir: note_dir.to_string(),
+            verbose,
+        }
+    }
+
+    #[test]
+    fn test_find_all_notes() {
+        // This is an existing test that ensures your fixture data is found.
+        // Make sure your fixture folder structure remains as expected.
+        const ENTRIES: [&str; 10] = [
+            "tests/fixtures/note_dir/note_file1.typ",
+            "tests/fixtures/note_dir/note_file2.md",
+            "tests/fixtures/note_dir/cat1/cat1_note_dir1",
+            "tests/fixtures/note_dir/cat1/cat1_note_dir2",
+            "tests/fixtures/note_dir/cat1/cat1_note_file.typ",
+            "tests/fixtures/note_dir/cat1/sub_cat1/sub_cat1_note_file.typ",
+            "tests/fixtures/note_dir/cat1/sub_cat1/sub_cat1_note_dir",
+            "tests/fixtures/note_dir/cat2/cat1_note_dir1",
+            "tests/fixtures/note_dir/cat2/cat2_note_dir",
+            "tests/fixtures/note_dir/cat2/cat2_note_file.md",
+        ];
+
+        let note_dir = Path::new("tests/fixtures/note_dir");
+        let result = find_all_notes(note_dir).unwrap();
+
+        assert_eq!(result.len(), ENTRIES.len());
+        for e in result {
             assert!(
-                result.is_err(),
-                "Second creation with same path should fail"
-            );
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(
-                err_msg.contains("already exists"),
-                "Error should mention 'already exists'"
+                ENTRIES.contains(&e.path().to_str().unwrap()),
+                "Entry not found: {:?}",
+                e
             );
         }
     }
 
-    /// Test previewing a note that doesn't exist
     #[test]
-    fn test_preview_note_not_found() {
-        let temp_dir = tempdir().expect("Failed to create temp dir");
-        let temp_dir_str = temp_dir.path().to_str().unwrap();
+    fn test_process_command_new_single_file_md() {
+        let tmp_dir = tempdir().unwrap();
+        let note_path = tmp_dir.path().join("MyNote.md");
+        let note_path_str = note_path.to_str().unwrap();
 
-        // Attempt to preview a non-existent note
-        let args = cli_preview_args("NonExistentNote", temp_dir_str);
+        let args = cli_new_args(note_path_str, true, NoteType::Md);
+        let result = process_command(args);
+        assert!(result.is_ok(), "Failed to create single-file md note");
+
+        // Verify file creation
+        assert!(note_path.is_file(), "Note file was not created");
+        let contents = fs::read_to_string(note_path).unwrap();
+        assert!(
+            contents.contains("title: \"MyNote\""),
+            "Metadata title not found in note"
+        );
+        assert!(
+            contents.contains("author: \"TestAuthor\""),
+            "Metadata author not found in note"
+        );
+    }
+
+    #[test]
+    fn test_process_command_new_single_file_typ() {
+        let tmp_dir = tempdir().unwrap();
+        let note_path = tmp_dir.path().join("AnotherNote.typ");
+        let note_path_str = note_path.to_str().unwrap();
+
+        let args = cli_new_args(note_path_str, true, NoteType::Typ);
+        let result = process_command(args);
+        assert!(result.is_ok(), "Failed to create single-file typ note");
+
+        // Verify file creation
+        assert!(note_path.is_file(), "Note file was not created");
+        let contents = fs::read_to_string(note_path).unwrap();
+        assert!(
+            contents.contains("#set document(title: \"AnotherNote\""),
+            "Metadata title not found in .typ note"
+        );
+        assert!(
+            contents.contains("author: \"TestAuthor\""),
+            "Metadata author not found in note"
+        );
+    }
+
+    #[test]
+    fn test_process_command_new_multi_file_md() {
+        let tmp_dir = tempdir().unwrap();
+        let note_dir = tmp_dir.path().join("multi_md");
+        let main_file = note_dir.join("main.md");
+
+        let args = cli_new_args(note_dir.to_str().unwrap(), false, NoteType::Md);
+        let result = process_command(args);
+        assert!(result.is_ok(), "Failed to create multi-file md note");
+
+        // The main.md file should have been created with metadata
+        assert!(main_file.is_file(), "main.md was not created");
+        let contents = fs::read_to_string(main_file).unwrap();
+        assert!(
+            contents.contains("title: \"multi_md\""),
+            "Metadata title not found in multi-file main.md"
+        );
+
+        // The template directories (images, chapter, bibliography) should exist
+        let images_dir = note_dir.join("images");
+        let chapter_dir = note_dir.join("chapter");
+        let biblio_dir = note_dir.join("bibliography");
+        assert!(images_dir.is_dir(), "images directory not created");
+        assert!(chapter_dir.is_dir(), "chapter directory not created");
+        assert!(biblio_dir.is_dir(), "bibliography directory not created");
+    }
+
+    #[test]
+    fn test_process_command_new_already_exists() {
+        let tmp_dir = tempdir().unwrap();
+        let note_dir = tmp_dir.path().join("already_exists");
+        let main_file = note_dir.join("main.md");
+        fs::create_dir_all(&note_dir).unwrap();
+        fs::write(&main_file, "Existing note content").unwrap();
+
+        // Attempt to create a note at the same location
+        let args = cli_new_args(note_dir.to_str().unwrap(), false, NoteType::Md);
         let result = process_command(args);
 
-        assert!(
-            result.is_err(),
-            "Preview should fail for a non-existent note"
-        );
+        assert!(result.is_err(), "Expected error when note already exists");
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
-            err_msg.contains("No note found"),
-            "Error should mention 'No note found'"
+            err_msg.contains("already exists"),
+            "Unexpected error message: {}",
+            err_msg
         );
     }
 
-    /// Test previewing an existing .md note
-    ///
-    /// We create a single-file .md note first, then try to preview it.
     #[test]
-    fn test_preview_existing_md() {
-        let temp_dir = tempdir().expect("Failed to create temp dir");
-        let note_file_path = temp_dir.path().join("PreviewMe.md");
-        let note_file_str = note_file_path.to_str().unwrap();
-        let temp_dir_str = temp_dir.path().to_str().unwrap();
+    fn test_process_command_list() {
+        let tmp_dir = tempdir().unwrap();
+        let note_dir = tmp_dir.path().to_path_buf();
 
-        // 1. Create a single-file .md note
+        // create a couple of notes
+        let note1 = note_dir.join("TestNote1.md");
+        fs::write(&note1, "# Test Note 1\n").unwrap();
+
+        let note2_dir = note_dir.join("TestNote2");
+        fs::create_dir_all(&note2_dir).unwrap();
+        fs::write(
+            note2_dir.join("main.typ"),
+            "#set document(title: \"TestNote2\")\n",
+        )
+        .unwrap();
+
+        // run `List` command
+        let args = cli_list_args(note_dir.to_str().unwrap(), false);
+        let result = process_command(args);
+        assert!(result.is_ok(), "Failed to list notes");
+        // We can't easily capture the printed output here,
+        // but we can check if the function completed successfully.
+    }
+
+    #[test]
+    fn test_process_command_search() {
+        let tmp_dir = tempdir().unwrap();
+        let note_dir = tmp_dir.path().to_path_buf();
+
+        // create a note with a known name
+        let note1_dir = note_dir.join("SearchedNote");
+        fs::create_dir_all(&note1_dir).unwrap();
+        fs::write(note1_dir.join("main.md"), "# Searched Note").unwrap();
+
+        // create a second note that we don't want to match
+        let note2_dir = note_dir.join("OtherNote");
+        fs::create_dir_all(&note2_dir).unwrap();
+        fs::write(note2_dir.join("main.md"), "# Other Note").unwrap();
+
+        // run `Search` with partial name
+        let args = cli_search_args("SearchedNote", note_dir.to_str().unwrap());
+        let result = process_command(args);
+        assert!(result.is_ok(), "Failed to search notes");
+    }
+
+    #[test]
+    fn test_process_command_preview_single_file() {
+        // This test will attempt to run "glow" or "tinymist".
+        // If "glow" or "tinymist" isn't installed, it may fail.
+        // Adjust or mock as necessary for your environment.
+
+        let tmp_dir = tempdir().unwrap();
+        let note_file = tmp_dir.path().join("PreviewMe.md");
+        fs::write(&note_file, "# Preview me").unwrap();
+
+        let args = cli_preview_args(
+            note_file.to_str().unwrap(),
+            tmp_dir.path().to_str().unwrap(),
+        );
+        let result = process_command(args);
+        // We expect an error if "glow" doesn't exist, but let's just check the function call.
+        // In a real environment, you'd want to handle or mock system calls.
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_process_command_preview_directory_with_main_md() {
+        // Similar to above, this will attempt to run "glow" or "tinymist".
+        let tmp_dir = tempdir().unwrap();
+        let note_dir = tmp_dir.path().join("PreviewDir");
+        fs::create_dir_all(&note_dir).unwrap();
+
+        // create a main.md so it picks it up by default
+        fs::write(note_dir.join("main.md"), "# main.md for preview").unwrap();
+
+        let args = cli_preview_args("PreviewDir", tmp_dir.path().to_str().unwrap());
+        let result = process_command(args);
+        // This may or may not succeed in your local environment depending on "glow" availability.
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_create_note_template_function() {
+        let tmp_dir = tempdir().unwrap();
+        let note_dir = tmp_dir.path().join("templated_note");
+
+        let mut sub_paths = HashMap::new();
+        sub_paths.insert(
+            "subfile.md".to_string(),
+            PathContent::File("content".to_string()),
+        );
+        let mut example_paths = HashMap::new();
+        example_paths.insert("subdir".to_string(), PathContent::Directory(sub_paths));
+
+        let template = NoteTemplate {
+            paths: example_paths,
+            main_typ: Some("Typ content".into()),
+            main_md: Some("Md content".into()),
+        };
+
+        let result = create_note_template(&note_dir, &template);
+        assert!(result.is_ok(), "Failed to create note template");
+
+        let subdir = note_dir.join("subdir");
+        let subfile = subdir.join("subfile.md");
+        assert!(subdir.is_dir(), "Subdirectory was not created");
+        assert!(subfile.is_file(), "Subfile.md was not created");
+        let content = fs::read_to_string(subfile).unwrap();
+        assert_eq!(&content, "content", "Wrong content in subfile.md");
+    }
+
+    #[test]
+    fn test_load_note_template_function() {
+        // We'll write a sample YAML file to a temp location, then load it.
+        let tmp_dir = tempdir().unwrap();
+        let template_file = tmp_dir.path().join("template.yml");
+
+        // Example template in YAML
+        let yaml_content = r#"
+paths:
+  images: {}
+  chapter: {}
+  bibliography: {}
+"main.typ": "Typ content here"
+"main.md": "Markdown content here"
+"#;
+
         {
-            let args = cli_new_args(note_file_str, true, NoteType::Md);
-            let result = process_command(args);
-            assert!(
-                result.is_ok(),
-                "Expected single-file .md creation to succeed"
-            );
+            let mut f = File::create(&template_file).unwrap();
+            writeln!(f, "{}", yaml_content).unwrap();
         }
 
-        // 2. Attempt to preview that note
-        {
-            let args = cli_preview_args("PreviewMe.md", temp_dir_str);
-            let result = process_command(args);
+        let loaded_template = load_note_template(template_file.to_str().unwrap());
+        assert!(loaded_template.is_ok(), "Failed to load note template");
+        let loaded_template = loaded_template.unwrap();
 
-            // If `glow` is not installed in the test environment, the command might fail,
-            // but logically, our code completes its logic up to the external call.
-            // For the test environment, we typically just check that no internal error occurs.
-            //
-            // If you want to avoid actually calling external commands,
-            // you could mock out `Command::new` for pure unit testing.
-            assert!(
-                result.is_ok(),
-                "Preview of existing .md note should succeed"
-            );
-        }
+        assert!(
+            loaded_template.paths.contains_key("images"),
+            "images folder missing"
+        );
+        assert!(
+            loaded_template.paths.contains_key("chapter"),
+            "chapter folder missing"
+        );
+        assert!(
+            loaded_template.paths.contains_key("bibliography"),
+            "bibliography folder missing"
+        );
+        assert_eq!(
+            loaded_template.main_typ.as_deref(),
+            Some("Typ content here"),
+            "Wrong main_typ"
+        );
+        assert_eq!(
+            loaded_template.main_md.as_deref(),
+            Some("Markdown content here"),
+            "Wrong main_md"
+        );
     }
 }

@@ -1,6 +1,7 @@
 #![feature(let_chains)]
 
 mod cli;
+mod note;
 mod process;
 
 fn main() {

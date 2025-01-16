@@ -51,6 +51,28 @@ pub enum Cli {
         #[arg(short = 'd', long, default_value = ".", env = "NOXE_DIR")]
         note_dir: String,
     },
+
+    #[command(about = "Search notes")]
+    Search {
+        /// The query to search for
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
+        query: String,
+
+        /// The directory where the notes are stored
+        #[arg(short = 'd', long, default_value = ".", env = "NOXE_DIR")]
+        note_dir: String,
+    },
+
+    #[command(about = "List notes")]
+    List {
+        /// The directory where the notes are stored
+        #[arg(short = 'd', long, default_value = ".", env = "NOXE_DIR")]
+        note_dir: String,
+
+        /// Show the full path of the notes
+        #[arg(short = 'p', long, default_value = "false")]
+        verbose: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
