@@ -1,7 +1,7 @@
 #![feature(let_chains)]
+#![feature(os_str_display)]
 
 mod cli;
-mod note;
 mod process;
 
 fn main() {

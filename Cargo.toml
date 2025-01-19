@@ -14,6 +14,8 @@ anyhow = "1"
 serde = { version = "1.0.217", features = ["derive"] }
 serde_yml = "0.0.12"
 regex = "1.11.1"
+colored = "3.0.0"
+ignore = { git = "https://github.com/sqfzy/ripgrep.git" }
 
 [dev-dependencies]
 tempfile = "3.15.0"

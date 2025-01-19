@@ -1,20 +1,17 @@
+#![allow(dead_code)]
+
 use crate::cli::{Cli, NoteType};
 use anyhow::{Context, Result, bail};
 use chrono::{Datelike, Timelike};
+use ignore::{DirEntry, WalkBuilder};
 use serde::Deserialize;
 use std::{
-    cell::RefCell,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path},
     process::Command,
 };
-use walkdir::{DirEntry, WalkDir};
-
-thread_local! {
-    static TOP_DIRS_IN_NOTE_DIR: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
 
 pub fn process_command(args: Cli) -> Result<()> {
     match args {
@@ -97,37 +94,35 @@ pub fn process_command(args: Cli) -> Result<()> {
             note_path: note_path_str,
             note_dir,
         } => {
-            let note_path = Path::new(&note_path_str);
+            let mut note_path = Path::new(&note_path_str).to_path_buf();
 
-            let note_path = if note_path
+            if note_path
                 .parent()
                 .and_then(|p| p.to_str())
-                .is_some_and(|s| !s.is_empty())
+                .is_none_or(|s| s.is_empty())
             {
-                if note_path.is_dir() {
-                    if note_path.join("main.md").is_file() {
-                        note_path.join("main.md")
-                    } else if note_path.join("main.typ").is_file() {
-                        note_path.join("main.typ")
-                    } else {
-                        bail!("No main file found in '{}'", note_path.display());
-                    }
-                } else {
-                    note_path.to_path_buf()
-                }
-            } else {
                 // note_path是note name而非路径
                 let note_dir = Path::new(&note_dir);
 
                 let mut result =
                     search_notes(note_dir, &|s| s.eq_ignore_ascii_case(&note_path_str))?;
 
-                match result.len() {
+                note_path = match result.len() {
                     0 => bail!("No note found in '{}'", note_dir.display()),
                     1 => result.pop().unwrap().path().to_path_buf(),
                     _ => prompt_user_choice(&result)?.path().to_path_buf(),
-                }
+                };
             };
+
+            if note_path.is_dir() {
+                if note_path.join("main.md").is_file() {
+                    note_path = note_path.join("main.md");
+                } else if note_path.join("main.typ").is_file() {
+                    note_path = note_path.join("main.typ");
+                } else {
+                    bail!("No main file found in '{}'", note_path.display());
+                }
+            }
 
             let note_type = if let Some(ext) = note_path.extension().and_then(|ext| ext.to_str())
                 && let Ok(note_type) = NoteType::try_from(ext)
@@ -158,29 +153,15 @@ pub fn process_command(args: Cli) -> Result<()> {
                 println!("{}", entry.path().display());
             }
         }
-        Cli::List { note_dir, verbose } => {
+        Cli::List { note_dir } => {
             let note_dir_path = Path::new(&note_dir);
 
-            let result = find_all_notes(note_dir_path)?;
-            if result.is_empty() {
-                bail!("No note found in '{}'", note_dir_path.display());
-            }
-
-            println!("Found notes:");
-            for entry in result {
-                if verbose {
-                    println!("{}", entry.path().display());
-                } else {
-                    println!(
-                        "{}",
-                        entry
-                            .path()
-                            .display()
-                            .to_string()
-                            .split_off(note_dir.len() + 1)
-                    );
-                }
-            }
+            let result = search_notes(note_dir_path, &|_| true)?;
+            let paths = result
+                .iter()
+                .map(|e| e.path().strip_prefix(note_dir_path).unwrap())
+                .collect::<Vec<_>>();
+            print_tree(&paths);
         }
     }
 
@@ -262,12 +243,6 @@ fn create_note_template(note_path: &Path, template: &NoteTemplate) -> Result<()>
         Ok(())
     }
 
-    for top_dir in template.paths.keys() {
-        TOP_DIRS_IN_NOTE_DIR.with_borrow_mut(|top_dirs| {
-            top_dirs.push(top_dir.clone());
-        });
-    }
-
     create_paths(note_path, &template.paths)?;
 
     Ok(())
@@ -331,19 +306,30 @@ fn metadata(
 /* `Preview` command helper */
 
 fn search_notes(note_dir: &Path, eq: &dyn Fn(&str) -> bool) -> Result<Vec<DirEntry>> {
-    let notes = find_all_notes(note_dir)?;
+    let mut file_notes = Vec::new();
+    let mut dir_notes = Vec::new();
 
-    let res = notes
-        .into_iter()
-        .filter(|note| {
-            note.path()
-                .file_name()
-                .and_then(|s| s.to_str())
-                .is_some_and(eq)
-        })
-        .collect();
+    let mut handle_filenote = |entry: DirEntry| {
+        if entry.file_name().to_str().is_some_and(eq) {
+            file_notes.push(entry);
+        }
+        Ok(())
+    };
+    let mut handle_dirnote = |entry: DirEntry| {
+        if entry.file_name().to_str().is_some_and(eq) {
+            dir_notes.push(entry);
+        }
+        Ok(())
+    };
+    handle_notes(
+        note_dir,
+        Some(&mut handle_filenote),
+        Some(&mut handle_dirnote),
+        None,
+    )?;
 
-    Ok(res)
+    file_notes.extend(dir_notes);
+    Ok(file_notes)
 }
 
 fn prompt_user_choice(candidates: &[DirEntry]) -> Result<DirEntry> {
@@ -366,7 +352,6 @@ fn prompt_user_choice(candidates: &[DirEntry]) -> Result<DirEntry> {
         bail!("Choice out of range");
     }
 
-    // Ok(candidates[choice - 1].clone())
     Ok(candidates[choice - 1].clone())
 }
 
@@ -407,38 +392,165 @@ fn preview_note(note_path: &Path, note_type: NoteType) -> Result<()> {
 
 /* common helper */
 
-fn find_all_notes(note_dir: &Path) -> Result<Vec<DirEntry>> {
-    let mut entries = Vec::new();
+fn handle_notes(
+    root: &Path,
+    mut handle_filenote: Option<&mut dyn FnMut(DirEntry) -> Result<()>>,
+    mut handle_dirnote: Option<&mut dyn FnMut(DirEntry) -> Result<()>>,
+    mut handle_category: Option<&mut dyn FnMut(DirEntry) -> Result<()>>,
+) -> Result<()> {
+    let mut it = WalkBuilder::new(root).build();
 
-    let mut it = WalkDir::new(note_dir).min_depth(1).into_iter();
-    while let Some(entry) = it.next() {
-        let entry = entry?;
+    it.next();
+    loop {
+        let entry = match it.next() {
+            Some(entry) => entry,
+            None => break,
+        }?;
 
-        if entry.file_type().is_dir() && find_main_file_depth_one(&entry).is_some() {
-            entries.push(entry);
-            it.skip_current_dir();
-        } else if let Some(ext) = entry.path().extension()
-            && (ext == "md" || ext == "typ")
+        if let Some(handle) = handle_filenote.as_mut()
+            && is_filenote(&entry)
         {
-            entries.push(entry);
+            handle(entry)?;
+        } else if let Some(handle) = handle_dirnote.as_mut()
+            && is_dirnote(&entry)
+        {
+            handle(entry)?;
+            it.skip_current_dir();
+        } else if let Some(handle) = handle_category.as_mut()
+            && is_category(&entry)
+        {
+            handle(entry)?;
         }
     }
 
-    Ok(entries)
+    Ok(())
 }
 
-fn find_main_file_depth_one(dir: &DirEntry) -> Option<PathBuf> {
-    if !dir.file_type().is_dir() {
-        return None;
+fn is_filenote(entry: &DirEntry) -> bool {
+    entry.file_type().is_some_and(|t| t.is_file())
+        && entry
+            .path()
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .and_then(|ext| NoteType::try_from(ext).ok())
+            .is_some()
+}
+
+fn is_dirnote(entry: &DirEntry) -> bool {
+    let path = entry.path();
+    entry.file_type().is_some_and(|t| t.is_dir())
+        && (path.join("main.md").is_file() || path.join("main.typ").is_file())
+}
+
+fn is_category(entry: &DirEntry) -> bool {
+    let path = entry.path();
+    entry.file_type().is_some_and(|t| t.is_dir())
+        && !path.join("main.md").is_file()
+        && !path.join("main.typ").is_file()
+}
+
+fn print_filenote(entry: &DirEntry) {
+    println!("{}", entry.file_name().display());
+}
+
+fn print_filenote_verbosely(entry: &DirEntry) {
+    println!("{}", entry.path().display());
+}
+
+fn print_dirnote(entry: &DirEntry) {
+    println!("{}", entry.file_name().display());
+}
+
+fn print_dirnote_verbosely(entry: &DirEntry) {
+    println!("{}", entry.path().display());
+}
+
+fn print_category(entry: &DirEntry) {
+    println!("{}", entry.file_name().display());
+}
+
+fn print_category_verbosely(entry: &DirEntry) {
+    println!("{}", entry.path().display());
+}
+
+fn print_tree(paths: &[&Path]) {
+    #[derive(Debug)]
+    struct PathNode {
+        children: BTreeMap<String, PathNode>,
+        is_file: bool,
     }
 
-    let path = dir.path();
-    let candidates = ["main.md", "main.typ"];
+    impl PathNode {
+        fn new() -> Self {
+            PathNode {
+                children: BTreeMap::new(),
+                is_file: false,
+            }
+        }
+    }
 
-    candidates
-        .iter()
-        .map(|file_name| path.join(file_name))
-        .find(|path| path.is_file())
+    fn add_path(root: &mut BTreeMap<String, PathNode>, path: &Path) {
+        // 将整个 path 的组件收集到一个 Vec 中，方便判断最后一个
+        let components: Vec<Component> = path.components().collect();
+
+        // 准备一个 mutable 引用，指向当前层级的子节点 map
+        let mut current_map = root;
+
+        for (i, component) in components.iter().enumerate() {
+            // 当前 component 转为字符串
+            let comp_str = component.as_os_str().to_string_lossy().to_string();
+
+            // 获取或插入一个子节点
+            let node = current_map.entry(comp_str).or_insert_with(PathNode::new);
+
+            // 如果是最后一个组件，标记 is_file
+            if i == components.len() - 1 {
+                node.is_file = true;
+            }
+
+            // 为下一轮循环将 `current_map` 移动到该节点的 children 上
+            current_map = &mut node.children;
+        }
+    }
+
+    fn print_subtree(
+        node_map: &BTreeMap<String, PathNode>,
+        prefix: &str,
+        is_last: bool,
+        node_name: Option<&str>,
+    ) {
+        if let Some(name) = node_name {
+            let branch = if is_last { "└── " } else { "├── " };
+            println!("{}{}{}", prefix, branch, name);
+        }
+
+        let new_prefix = if is_last {
+            format!("{}    ", prefix)
+        } else {
+            format!("{}│   ", prefix)
+        };
+
+        let len = node_map.len();
+        for (i, (child_name, child_node)) in node_map.iter().enumerate() {
+            let child_is_last = i == (len - 1);
+            print_subtree(
+                &child_node.children,
+                &new_prefix,
+                child_is_last,
+                Some(child_name),
+            );
+        }
+    }
+
+    let mut root = BTreeMap::new();
+
+    // 先把所有路径插入 tree
+    for p in paths {
+        add_path(&mut root, p);
+    }
+
+    // 再写一个递归函数去打印
+    print_subtree(&root, "", true, None);
 }
 
 #[cfg(test)]
@@ -479,40 +591,9 @@ mod tests {
     }
 
     /// Helper to build Cli::List arguments quickly
-    fn cli_list_args(note_dir: &str, verbose: bool) -> Cli {
+    fn cli_list_args(note_dir: &str) -> Cli {
         Cli::List {
             note_dir: note_dir.to_string(),
-            verbose,
-        }
-    }
-
-    #[test]
-    fn test_find_all_notes() {
-        // This is an existing test that ensures your fixture data is found.
-        // Make sure your fixture folder structure remains as expected.
-        const ENTRIES: [&str; 10] = [
-            "tests/fixtures/note_dir/note_file1.typ",
-            "tests/fixtures/note_dir/note_file2.md",
-            "tests/fixtures/note_dir/cat1/cat1_note_dir1",
-            "tests/fixtures/note_dir/cat1/cat1_note_dir2",
-            "tests/fixtures/note_dir/cat1/cat1_note_file.typ",
-            "tests/fixtures/note_dir/cat1/sub_cat1/sub_cat1_note_file.typ",
-            "tests/fixtures/note_dir/cat1/sub_cat1/sub_cat1_note_dir",
-            "tests/fixtures/note_dir/cat2/cat1_note_dir1",
-            "tests/fixtures/note_dir/cat2/cat2_note_dir",
-            "tests/fixtures/note_dir/cat2/cat2_note_file.md",
-        ];
-
-        let note_dir = Path::new("tests/fixtures/note_dir");
-        let result = find_all_notes(note_dir).unwrap();
-
-        assert_eq!(result.len(), ENTRIES.len());
-        for e in result {
-            assert!(
-                ENTRIES.contains(&e.path().to_str().unwrap()),
-                "Entry not found: {:?}",
-                e
-            );
         }
     }
 
@@ -628,7 +709,7 @@ mod tests {
         .unwrap();
 
         // run `List` command
-        let args = cli_list_args(note_dir.to_str().unwrap(), false);
+        let args = cli_list_args(note_dir.to_str().unwrap());
         let result = process_command(args);
         assert!(result.is_ok(), "Failed to list notes");
         // We can't easily capture the printed output here,

@@ -63,15 +63,12 @@ pub enum Cli {
         note_dir: String,
     },
 
+    // TODO: List categories
     #[command(about = "List notes")]
     List {
         /// The directory where the notes are stored
         #[arg(short = 'd', long, default_value = ".", env = "NOXE_DIR")]
         note_dir: String,
-
-        /// Show the full path of the notes
-        #[arg(short = 'p', long, default_value = "false")]
-        verbose: bool,
     },
 }
 
@@ -99,6 +96,15 @@ impl TryFrom<&str> for NoteType {
             "typ" => Ok(NoteType::Typ),
             "md" => Ok(NoteType::Md),
             _ => Err(format!("Invalid note type: {}", value)),
+        }
+    }
+}
+
+impl From<NoteType> for &'static str {
+    fn from(val: NoteType) -> Self {
+        match val {
+            NoteType::Typ => "typ",
+            NoteType::Md => "md",
         }
     }
 }
