@@ -7,7 +7,11 @@
 # 2. 安装
   
 ```shell
-cargo install noxe
+git clone https://github.com/sqfzy/noxe.git &&
+cd noxe &&
+cargo install --path . &&
+cd ../ &&
+rm -rf noxe
 ```
 
 # 3. 使用
