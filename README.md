@@ -9,6 +9,8 @@
 ```shell
 git clone https://github.com/sqfzy/noxe.git &&
 cd noxe &&
+mkdir -p ~/.config/fish/completions/ &&
+cp -f noxe.fish ~/.config/fish/completions/ && # 支持fish shell补全
 cargo install --path . &&
 cd ../ &&
 rm -rf noxe
@@ -73,3 +75,5 @@ main.md: |
 - [ ] 彩色输出
 - [x] 用户通过`$NOXE_DIR`下的`.ignore`或`.gitignore`文件指定忽略文件夹和文件
 - [ ] 也许会考虑处理symlink
+- [ ] 显示最近添加，最近修改的笔记
+- [ ] 使用自定义的编辑器快速编辑笔记

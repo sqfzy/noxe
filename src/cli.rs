@@ -63,12 +63,39 @@ pub enum Cli {
         note_dir: String,
     },
 
-    // TODO: List categories
     #[command(about = "List notes")]
     List {
         /// The directory where the notes are stored
         #[arg(short = 'd', long, default_value = ".", env = "NOXE_DIR")]
         note_dir: String,
+
+        /// List categories
+        #[arg(short = 'a', default_value = "false", group = "sort")]
+        category: bool,
+
+        /// List notes by category
+        #[arg(short = 'c', default_value = "false", group = "sort")]
+        sort_by_category: bool,
+
+        /// List notes by name
+        #[arg(short = 'n', default_value = "false", group = "sort")]
+        sort_by_name: bool,
+
+        /// List notes by created date
+        #[arg(short = 'C', default_value = "false", group = "sort")]
+        sort_by_created_at: bool,
+
+        /// List notes by updated date
+        #[arg(short = 'u', default_value = "false", group = "sort")]
+        sort_by_updated_at: bool,
+
+        /// The number of notes to list
+        #[arg(short = 'N', long, default_value = "10")]
+        number: usize,
+
+        /// Only list notes file name
+        #[arg(short = 't', long, default_value = "false")]
+        terse: bool,
     },
 }
 

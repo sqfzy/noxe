@@ -9,7 +9,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs,
     io::{self, Write},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     process::Command,
 };
 
@@ -104,8 +104,10 @@ pub fn process_command(args: Cli) -> Result<()> {
                 // note_path是note name而非路径
                 let note_dir = Path::new(&note_dir);
 
-                let mut result =
-                    search_notes(note_dir, &|s| s.eq_ignore_ascii_case(&note_path_str))?;
+                let mut result = search(note_dir, true, true, false, &|s| {
+                    s.eq_ignore_ascii_case(&note_path_str)
+                })?
+                .concat();
 
                 note_path = match result.len() {
                     0 => bail!("No note found in '{}'", note_dir.display()),
@@ -142,7 +144,7 @@ pub fn process_command(args: Cli) -> Result<()> {
                 .with_context(|| format!("Failed to build regex from '{}'", query))?;
 
             let note_dir = Path::new(&note_dir);
-            let result = search_notes(note_dir, &|s| pattern.is_match(s))?;
+            let result = search(note_dir, true, true, false, &|s| pattern.is_match(s))?.concat();
 
             if result.is_empty() {
                 bail!("No note found in '{}'", note_dir.display());
@@ -153,15 +155,109 @@ pub fn process_command(args: Cli) -> Result<()> {
                 println!("{}", entry.path().display());
             }
         }
-        Cli::List { note_dir } => {
+        Cli::List {
+            note_dir,
+            category,
+            sort_by_category,
+            sort_by_name,
+            sort_by_created_at,
+            sort_by_updated_at,
+            number,
+            terse,
+        } => {
             let note_dir_path = Path::new(&note_dir);
 
-            let result = search_notes(note_dir_path, &|_| true)?;
-            let paths = result
-                .iter()
-                .map(|e| e.path().strip_prefix(note_dir_path).unwrap())
-                .collect::<Vec<_>>();
-            print_tree(&paths);
+            let result = if category {
+                search(note_dir_path, false, false, true, &|_| true)?.concat()
+            } else {
+                search(note_dir_path, true, true, false, &|_| true)?.concat()
+            };
+
+            let mut notes = result.iter().map(|e| e.path()).collect::<Vec<_>>();
+            let mut print_tree_flag = false;
+
+            if sort_by_category {
+                // 按分类分组逻辑
+                let mut categories: HashMap<String, Vec<PathBuf>> = HashMap::new();
+
+                // 遍历所有笔记路径
+                for note_path in &notes {
+                    // 剥离根目录前缀
+                    let rel_path = note_path.strip_prefix(note_dir_path).unwrap();
+
+                    // 提取最低一级分类名
+                    let category_name = rel_path
+                        .parent()
+                        .and_then(|p| p.iter().next_back())
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Uncategorized".to_string());
+
+                    // 提取文件名部分
+                    let file_name = rel_path.file_name().unwrap();
+
+                    // 构造分类下的相对路径 (分类名/文件名)
+                    let categorized_path = Path::new(&category_name).join(file_name);
+
+                    // 按分类分组
+                    categories
+                        .entry(category_name)
+                        .or_default()
+                        .push(categorized_path);
+                }
+
+                // 按分类名排序后输出
+                let mut sorted_categories: Vec<_> = categories.into_iter().collect();
+                sorted_categories.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+                // 为每个分类生成树
+                for (_, notes) in sorted_categories {
+                    print_tree(&notes);
+                }
+
+                return Ok(());
+            } else if sort_by_name {
+                notes.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+            } else if sort_by_created_at {
+                notes.sort_by(|a, b| {
+                    b.metadata()
+                        .unwrap()
+                        .created()
+                        .unwrap()
+                        .cmp(&a.metadata().unwrap().created().unwrap())
+                });
+                // 只显示最新的number个笔记
+                notes.truncate(number);
+            } else if sort_by_updated_at {
+                notes.sort_by(|a, b| {
+                    b.metadata()
+                        .unwrap()
+                        .modified()
+                        .unwrap()
+                        .cmp(&a.metadata().unwrap().modified().unwrap())
+                });
+                // 只显示最新的number个笔记
+                notes.truncate(number);
+            } else {
+                print_tree_flag = true;
+            }
+
+            if terse {
+                notes.iter_mut().for_each(|n| {
+                    *n = Path::new(n.file_name().unwrap());
+                });
+            } else {
+                notes.iter_mut().for_each(|n| {
+                    *n = n.strip_prefix(note_dir_path).unwrap();
+                });
+            }
+
+            if print_tree_flag {
+                print_tree(&notes);
+            } else {
+                for note in notes {
+                    println!("{}", note.display());
+                }
+            }
         }
     }
 
@@ -303,33 +399,62 @@ fn metadata(
     }
 }
 
-/* `Preview` command helper */
+fn search(
+    note_dir: &Path,
+    search_filenote: bool,
+    search_dirnote: bool,
+    search_category: bool,
+    eq: &dyn Fn(&str) -> bool,
+) -> Result<[Vec<DirEntry>; 3]> {
+    let mut filenotes = Vec::new();
+    let mut dirnotes = Vec::new();
+    let mut categories = Vec::new();
 
-fn search_notes(note_dir: &Path, eq: &dyn Fn(&str) -> bool) -> Result<Vec<DirEntry>> {
-    let mut file_notes = Vec::new();
-    let mut dir_notes = Vec::new();
+    let mut handle_filenote = if search_filenote {
+        Some(|entry: DirEntry| {
+            if entry.file_name().to_str().is_some_and(eq) {
+                filenotes.push(entry);
+            }
+            Ok(())
+        })
+    } else {
+        None
+    };
+    let mut handle_dirnote = if search_dirnote {
+        Some(|entry: DirEntry| {
+            if entry.file_name().to_str().is_some_and(eq) {
+                dirnotes.push(entry);
+            }
+            Ok(())
+        })
+    } else {
+        None
+    };
+    let mut handle_category = if search_category {
+        Some(|entry: DirEntry| {
+            if entry.file_name().to_str().is_some_and(eq) {
+                categories.push(entry);
+            }
+            Ok(())
+        })
+    } else {
+        None
+    };
 
-    let mut handle_filenote = |entry: DirEntry| {
-        if entry.file_name().to_str().is_some_and(eq) {
-            file_notes.push(entry);
-        }
-        Ok(())
-    };
-    let mut handle_dirnote = |entry: DirEntry| {
-        if entry.file_name().to_str().is_some_and(eq) {
-            dir_notes.push(entry);
-        }
-        Ok(())
-    };
     handle_notes(
         note_dir,
-        Some(&mut handle_filenote),
-        Some(&mut handle_dirnote),
-        None,
+        handle_filenote
+            .as_mut()
+            .map(|f| f as &mut dyn FnMut(DirEntry) -> Result<()>),
+        handle_dirnote
+            .as_mut()
+            .map(|f| f as &mut dyn FnMut(DirEntry) -> Result<()>),
+        handle_category
+            .as_mut()
+            .map(|f| f as &mut dyn FnMut(DirEntry) -> Result<()>),
     )?;
 
-    file_notes.extend(dir_notes);
-    Ok(file_notes)
+    Ok([filenotes, dirnotes, categories])
 }
 
 fn prompt_user_choice(candidates: &[DirEntry]) -> Result<DirEntry> {
@@ -389,8 +514,6 @@ fn preview_note(note_path: &Path, note_type: NoteType) -> Result<()> {
 
     Ok(())
 }
-
-/* common helper */
 
 fn handle_notes(
     root: &Path,
@@ -473,7 +596,7 @@ fn print_category_verbosely(entry: &DirEntry) {
     println!("{}", entry.path().display());
 }
 
-fn print_tree(paths: &[&Path]) {
+fn print_tree(paths: &[impl AsRef<Path>]) {
     #[derive(Debug)]
     struct PathNode {
         children: BTreeMap<String, PathNode>,
@@ -546,7 +669,7 @@ fn print_tree(paths: &[&Path]) {
 
     // 先把所有路径插入 tree
     for p in paths {
-        add_path(&mut root, p);
+        add_path(&mut root, p.as_ref());
     }
 
     // 再写一个递归函数去打印
@@ -594,6 +717,13 @@ mod tests {
     fn cli_list_args(note_dir: &str) -> Cli {
         Cli::List {
             note_dir: note_dir.to_string(),
+            category: false,
+            sort_by_category: true,
+            sort_by_name: false,
+            sort_by_created_at: false,
+            sort_by_updated_at: false,
+            number: 10,
+            terse: false,
         }
     }
 
