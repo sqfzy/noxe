@@ -7,6 +7,7 @@ use ignore::{DirEntry, WalkBuilder};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, HashMap},
+    ffi::OsString,
     fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
@@ -93,6 +94,8 @@ pub fn process_command(args: Cli) -> Result<()> {
         Cli::Preview {
             note_path: note_path_str,
             note_dir,
+            mut preview_typst,
+            mut preview_markdown,
         } => {
             let mut note_path = Path::new(&note_path_str).to_path_buf();
 
@@ -134,7 +137,24 @@ pub fn process_command(args: Cli) -> Result<()> {
                 bail!("Failed to parse note type from '{}'", note_path.display());
             };
 
-            preview_note(&note_path, note_type)?;
+            if preview_typst.is_empty() {
+                let root = note_path.parent().unwrap();
+                preview_typst = vec![
+                    "tinymist".into(),
+                    "preview".into(),
+                    "--root".into(),
+                    root.into(),
+                ];
+            }
+            if preview_markdown.is_empty() {
+                preview_markdown = vec!["glow".into()];
+            }
+
+            match note_type {
+                NoteType::Typ => preview_note(&note_path, &preview_typst)?,
+                NoteType::Md => preview_note(&note_path, &preview_markdown)?,
+            }
+
             print!("Previewing note '{}'", note_path.display());
         }
         Cli::Search { query, note_dir } => {
@@ -480,37 +500,16 @@ fn prompt_user_choice(candidates: &[DirEntry]) -> Result<DirEntry> {
     Ok(candidates[choice - 1].clone())
 }
 
-fn preview_note(note_path: &Path, note_type: NoteType) -> Result<()> {
-    match note_type {
-        NoteType::Md => {
-            println!(r#"Running "glow {}""#, note_path.display());
-            Command::new("glow")
-                .arg(note_path)
-                .status()
-                .with_context(|| {
-                    format!(
-                        "Error: Failed to preview markdown note '{}'",
-                        note_path.display()
-                    )
-                })?;
-        }
-        NoteType::Typ => {
-            let root = note_path.parent().unwrap();
-            println!(r#"Running "tinymist preview {}""#, note_path.display());
-            Command::new("tinymist")
-                .arg("preview")
-                .arg("--root")
-                .arg(root)
-                .arg(note_path)
-                .status()
-                .with_context(|| {
-                    format!(
-                        "Error: Failed to preview typora note '{}'",
-                        note_path.display()
-                    )
-                })?;
-        }
+fn preview_note(note_path: &Path, args: &[OsString]) -> Result<()> {
+    let mut cmd = Command::new(&args[0]);
+    for arg in &args[1..] {
+        cmd.arg(arg);
     }
+    cmd.arg(note_path);
+
+    println!("Running {:?}", cmd);
+
+    cmd.status()?;
 
     Ok(())
 }
@@ -702,6 +701,8 @@ mod tests {
         Cli::Preview {
             note_path: note_path.to_string(),
             note_dir: note_dir.to_string(),
+            preview_typst: vec![],
+            preview_markdown: vec![],
         }
     }
 

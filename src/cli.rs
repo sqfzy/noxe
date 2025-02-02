@@ -1,3 +1,5 @@
+use std::ffi::OsString;
+
 use clap::{
     Parser, ValueEnum, builder::NonEmptyStringValueParser, crate_authors, crate_description,
     crate_name, crate_version,
@@ -23,7 +25,7 @@ pub enum Cli {
         note_author: Option<String>,
 
         /// Specify keywords for the note (comma-separated)
-        #[arg(short = 'k', long)]
+        #[arg(short = 'k', long, value_delimiter = ',')]
         note_keywords: Vec<String>,
 
         /// Specify the note type (md|typ). Default is 'typ'
@@ -50,6 +52,16 @@ pub enum Cli {
         /// The directory where the notes are stored
         #[arg(short = 'd', long, default_value = ".", env = "NOXE_DIR")]
         note_dir: String,
+
+        /// Custom typst preview command. The note path will automatically be appended to the command.
+        /// eg. `tinymist preview`
+        #[arg(long, value_delimiter = ' ', env = "NOXE_PREVIEW_TYPST")]
+        preview_typst: Vec<OsString>,
+
+        /// Custom markdown preview command. The note path will automatically be appended to the command.
+        /// eg. `glow`
+        #[arg(long, value_delimiter = ' ', env = "NOXE_PREVIEW_MARKDOWN")]
+        preview_markdown: Vec<OsString>,
     },
 
     #[command(about = "Search notes")]

@@ -70,8 +70,8 @@ main.md: |
 
 # 5. TODO
 
-- [ ] 支持用户自定义预览笔记的命令
-- [ ] 支持补全，包括`noxe preview`自动补全`$NOXE_DIR`下的笔记名
+- [x] 支持用户自定义预览笔记的命令
+- [x] 支持补全，包括`noxe preview`自动补全`$NOXE_DIR`下的笔记名
 - [ ] 彩色输出
 - [x] 用户通过`$NOXE_DIR`下的`.ignore`或`.gitignore`文件指定忽略文件夹和文件
 - [ ] 也许会考虑处理symlink
