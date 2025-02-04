@@ -18,7 +18,7 @@ pub enum Cli {
         /// The path of the note. If the note path includes an extension (e.g., .md or .typ), the note type will be
         /// automatically inferred and the note will be created as a single file.
         #[arg(value_parser = NonEmptyStringValueParser::new())]
-        note_path: String,
+        note_path: OsString,
 
         /// The author of the note
         #[arg(short = 'a', long, env = "NOXE_AUTHOR")]
@@ -36,22 +36,21 @@ pub enum Cli {
         single_file: bool,
 
         #[arg(short = 'S', long, env = "NOXE_TEMPLATE")]
-        note_template: Option<String>,
+        note_template: Option<OsString>,
 
         #[arg(short = 'm', long, default_value = "true")]
         note_with_metadata: bool,
     },
 
-    #[command(about = "Preview the note")]
+    #[command(about = "Preview note")]
     Preview {
         /// The path or name of the note. When it is a name, the note will be searched in the note directory.
         /// When it is a path, the note will be found in the specified path.
-        #[arg(value_parser = NonEmptyStringValueParser::new())]
-        note_path: String,
+        note_path: Option<OsString>,
 
         /// The directory where the notes are stored
         #[arg(short = 'd', long, default_value = ".", env = "NOXE_DIR")]
-        note_dir: String,
+        note_dir: OsString,
 
         /// Custom typst preview command. The note path will automatically be appended to the command.
         /// eg. `tinymist preview`
@@ -64,6 +63,21 @@ pub enum Cli {
         preview_markdown: Vec<OsString>,
     },
 
+    #[command(about = "Edit note")]
+    Edit {
+        /// The path or name of the note. When it is a name, the note will be searched in the note directory.
+        /// When it is a path, the note will be found in the specified path.
+        note_path: Option<OsString>,
+
+        /// The directory where the notes are stored
+        #[arg(short = 'd', long, default_value = ".", env = "NOXE_DIR")]
+        note_dir: OsString,
+
+        #[arg(long, env = "NOXE_EDIT")]
+        /// Custom edit command. The note path will automatically be appended to the command.
+        edit: Vec<OsString>,
+    },
+
     #[command(about = "Search notes")]
     Search {
         /// The query to search for
@@ -72,14 +86,14 @@ pub enum Cli {
 
         /// The directory where the notes are stored
         #[arg(short = 'd', long, default_value = ".", env = "NOXE_DIR")]
-        note_dir: String,
+        note_dir: OsString,
     },
 
     #[command(about = "List notes")]
     List {
         /// The directory where the notes are stored
         #[arg(short = 'd', long, default_value = ".", env = "NOXE_DIR")]
-        note_dir: String,
+        note_dir: OsString,
 
         /// List categories
         #[arg(short = 'a', default_value = "false", group = "sort")]

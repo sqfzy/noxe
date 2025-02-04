@@ -21,8 +21,13 @@ rm -rf noxe
 ```shell
 noxe new myNote
 noxe new myFileNote.md
+noxe list # 列出$NOXE_DIR下的所有笔记
+noxe search "myNote" # 搜索$NOXE_DIR下的笔记
 noxe preview myNote # 在$NOXE_DIR下查找并预览myNote, $NOXE_DIR默认为当前目录
 noxe preview ./myNote # 查看当前目录下的myNote
+noxe preview "myNote" --preview-typst="cat" # 使用cat(而不是tinymist)预览typst文件
+noxe edit myNote # 使用默认编辑器vim编辑myNote
+noxe edit myNote --editor="nvim" # 使用neovim编辑myNote
 ```
 
 # 4. 笔记的目录结构
@@ -75,5 +80,5 @@ main.md: |
 - [ ] 彩色输出
 - [x] 用户通过`$NOXE_DIR`下的`.ignore`或`.gitignore`文件指定忽略文件夹和文件
 - [ ] 也许会考虑处理symlink
-- [ ] 显示最近添加，最近修改的笔记
-- [ ] 使用自定义的编辑器快速编辑笔记
+- [x] 显示最近添加，最近修改的笔记
+- [x] 使用自定义的编辑器快速编辑笔记

@@ -1,6 +1,6 @@
 function __fish_noxe_complete
-    # 检查当前命令行是否以 "noxe preview" 开头
-    if not string match -q "noxe preview*" -- (commandline -p)
+    # 检查当前命令行是否以 "noxe preview" 或者 "noxe edit" 开头
+    if not string match -qr "noxe (preview|edit)*" -- (commandline -p)
         return
     end
 
