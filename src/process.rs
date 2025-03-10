@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::cli::{Cli, NoteType};
 use anyhow::{Context, Result, bail};
 use chrono::{Datelike, Timelike};
@@ -7,6 +5,7 @@ use ignore::{DirEntry, WalkBuilder};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, HashMap},
+    env::current_dir,
     ffi::{OsStr, OsString},
     fs,
     io::{self, Write},
@@ -15,10 +14,11 @@ use std::{
     process::Command,
 };
 
+// TODO: 改为NewType
 trait Note {
     fn note_type(&self) -> Result<NoteType>;
 
-    fn note_path(&self) -> Result<PathBuf>;
+    fn main_file_path(&self) -> Result<PathBuf>;
 
     fn is_filenote(&self) -> bool;
 
@@ -27,6 +27,8 @@ trait Note {
     fn is_category(&self) -> bool;
 
     fn is_note_name(&self) -> bool;
+
+    // fn note_name
 }
 
 impl<T: Deref<Target = Path>> Note for T {
@@ -40,7 +42,7 @@ impl<T: Deref<Target = Path>> Note for T {
         }
     }
 
-    fn note_path(&self) -> Result<PathBuf> {
+    fn main_file_path(&self) -> Result<PathBuf> {
         let note_path = if self.is_dir() {
             if self.join("main.typ").is_file() {
                 self.join("main.typ")
@@ -157,35 +159,17 @@ pub fn process_command(args: Cli) -> Result<()> {
         }
         Cli::Preview {
             note_path,
-            note_dir,
+            note_root,
             mut preview_typst,
             mut preview_markdown,
         } => {
-            let note_path_str = if let Some(s) = note_path {
+            let note_path = if let Some(s) = note_path {
                 s
             } else {
-                std::env::current_dir()?.into_os_string()
+                current_dir()?.into_os_string()
             };
 
-            let mut note_path = Path::new(&note_path_str).to_path_buf();
-
-            if note_path.is_note_name() {
-                // note_path是note name而非路径
-                let note_dir = Path::new(&note_dir);
-
-                let mut result = search(note_dir, true, true, false, &|s| {
-                    s.eq_ignore_ascii_case(&note_path_str)
-                })?
-                .concat();
-
-                note_path = match result.len() {
-                    0 => bail!("No note found in '{}'", note_dir.display()),
-                    1 => result.pop().unwrap().path().to_path_buf(),
-                    _ => prompt_user_choice(&result)?.path().to_path_buf(),
-                };
-            };
-
-            let note_path = note_path.note_path()?;
+            let note_path = find_note_dir(&note_path, &note_root)?.main_file_path()?;
             let note_type = note_path.note_type()?;
 
             if preview_typst.is_empty() {
@@ -210,34 +194,16 @@ pub fn process_command(args: Cli) -> Result<()> {
         }
         Cli::Edit {
             note_path,
-            note_dir,
+            note_root,
             mut edit,
         } => {
-            let note_path_str = if let Some(s) = note_path {
+            let note_path = if let Some(s) = note_path {
                 s
             } else {
-                std::env::current_dir()?.into_os_string()
+                current_dir()?.into_os_string()
             };
 
-            let mut note_path = Path::new(&note_path_str).to_path_buf();
-
-            if note_path.is_note_name() {
-                // note_path是note name而非路径
-                let note_dir = Path::new(&note_dir);
-
-                let mut result = search(note_dir, true, true, false, &|s| {
-                    s.eq_ignore_ascii_case(&note_path_str)
-                })?
-                .concat();
-
-                note_path = match result.len() {
-                    0 => bail!("No note found in '{}'", note_dir.display()),
-                    1 => result.pop().unwrap().path().to_path_buf(),
-                    _ => prompt_user_choice(&result)?.path().to_path_buf(),
-                };
-            };
-
-            let note_path = note_path.note_path()?;
+            let note_path = find_note_dir(&note_path, &note_root)?.main_file_path()?;
 
             if edit.is_empty() {
                 edit = vec!["vim".into()];
@@ -245,20 +211,20 @@ pub fn process_command(args: Cli) -> Result<()> {
 
             exec_with(&note_path, &edit)?;
         }
-        Cli::Search { query, note_dir } => {
+        Cli::Search { query, note_root } => {
             let pattern = regex::RegexBuilder::new(&query)
                 .case_insensitive(true)
                 .build()
                 .with_context(|| format!("Failed to build regex from '{}'", query))?;
 
-            let note_dir = Path::new(&note_dir);
-            let result = search(note_dir, true, true, false, &|s| {
+            let note_root = Path::new(&note_root);
+            let result = search(note_root, true, true, false, &|s| {
                 s.to_str().is_some_and(|s| pattern.is_match(s))
             })?
             .concat();
 
             if result.is_empty() {
-                bail!("No note found in '{}'", note_dir.display());
+                bail!("No note found in '{}'", note_root.display());
             }
 
             println!("Found notes:");
@@ -267,7 +233,7 @@ pub fn process_command(args: Cli) -> Result<()> {
             }
         }
         Cli::List {
-            note_dir,
+            note_root,
             category,
             sort_by_category,
             sort_by_name,
@@ -276,12 +242,12 @@ pub fn process_command(args: Cli) -> Result<()> {
             number,
             terse,
         } => {
-            let note_dir_path = Path::new(&note_dir);
+            let note_root_path = Path::new(&note_root);
 
             let result = if category {
-                search(note_dir_path, false, false, true, &|_| true)?.concat()
+                search(note_root_path, false, false, true, &|_| true)?.concat()
             } else {
-                search(note_dir_path, true, true, false, &|_| true)?.concat()
+                search(note_root_path, true, true, false, &|_| true)?.concat()
             };
 
             let mut notes = result.iter().map(|e| e.path()).collect::<Vec<_>>();
@@ -294,7 +260,7 @@ pub fn process_command(args: Cli) -> Result<()> {
                 // 遍历所有笔记路径
                 for note_path in &notes {
                     // 剥离根目录前缀
-                    let rel_path = note_path.strip_prefix(note_dir_path).unwrap();
+                    let rel_path = note_path.strip_prefix(note_root_path).unwrap();
 
                     // 提取最低一级分类名
                     let category_name = rel_path
@@ -358,7 +324,7 @@ pub fn process_command(args: Cli) -> Result<()> {
                 });
             } else {
                 notes.iter_mut().for_each(|n| {
-                    *n = n.strip_prefix(note_dir_path).unwrap();
+                    *n = n.strip_prefix(note_root_path).unwrap();
                 });
             }
 
@@ -369,6 +335,52 @@ pub fn process_command(args: Cli) -> Result<()> {
                     println!("{}", note.display());
                 }
             }
+        }
+        Cli::Grep { note_root, pattern } => {
+            std::process::Command::new("rg")
+                .arg("-g")
+                .arg("*.{md,typ}")
+                .arg(&pattern)
+                .arg(&note_root)
+                .status()?;
+        }
+        Cli::Publish {
+            note_path,
+            note_root,
+            output_type,
+        } => {
+            let note_path = if let Some(s) = note_path {
+                s
+            } else {
+                current_dir()?.into_os_string()
+            };
+
+            let note_dir = find_note_dir(&note_path, &note_root)?;
+            let note_path = note_dir.main_file_path()?;
+            let note_type = note_path.note_type()?;
+
+            match note_type {
+                NoteType::Md => {
+                    println!("No need to publish markdown note");
+                    return Ok(());
+                }
+                NoteType::Typ => {}
+            }
+
+            let mut publish_name = note_dir.file_stem().unwrap().to_os_string();
+            let now = chrono::Local::now();
+            publish_name.push(now.format("-%Y-%m-%d.").to_string());
+            publish_name.push(output_type);
+
+            let publish_path = PathBuf::from(note_root).join("publish").join(publish_name);
+
+            Command::new("typst")
+                .arg("compile")
+                .arg(note_path)
+                .arg(publish_path)
+                .arg("--features")
+                .arg("html")
+                .status()?;
         }
     }
 
@@ -415,11 +427,33 @@ impl Default for NoteTemplate {
     }
 }
 
+fn find_note_dir(note_path_str: &OsStr, note_root: &OsStr) -> Result<PathBuf> {
+    let mut note_path = Path::new(note_path_str).to_path_buf();
+
+    if note_path.is_note_name() {
+        // note_path是note name而非路径
+        let note_root = Path::new(&note_root);
+
+        let mut result = search(note_root, true, true, false, &|s| {
+            s.eq_ignore_ascii_case(note_path_str)
+        })?
+        .concat();
+
+        note_path = match result.len() {
+            0 => bail!("No note found in '{}'", note_root.display()),
+            1 => result.pop().unwrap().path().to_path_buf(),
+            _ => prompt_user_choice(&result)?.path().to_path_buf(),
+        };
+    };
+
+    Ok(note_path)
+}
+
 fn create_note_template(note_path: &Path, template: &NoteTemplate) -> Result<()> {
     // 递归创建目录和文件
-    fn create_paths(note_dir: &Path, content: &HashMap<String, PathContent>) -> Result<()> {
+    fn create_paths(dir: &Path, content: &HashMap<String, PathContent>) -> Result<()> {
         for (name, path_content) in content {
-            let current_path = note_dir.join(name);
+            let current_path = dir.join(name);
 
             match path_content {
                 PathContent::Directory(sub_content) => {
@@ -511,7 +545,7 @@ fn metadata(
 }
 
 fn search(
-    note_dir: &Path,
+    note_root: &Path,
     search_filenote: bool,
     search_dirnote: bool,
     search_category: bool,
@@ -553,7 +587,7 @@ fn search(
     };
 
     handle_notes(
-        note_dir,
+        note_root,
         handle_filenote
             .as_mut()
             .map(|f| f as &mut dyn FnMut(DirEntry) -> Result<()>),
@@ -639,56 +673,29 @@ fn handle_notes(
     Ok(())
 }
 
-// fn is_filenote(entry: &DirEntry) -> bool {
-//     entry.file_type().is_some_and(|t| t.is_file())
-//         && entry
-//             .path()
-//             .extension()
-//             .and_then(|ext| ext.to_str())
-//             .and_then(|ext| NoteType::try_from(ext).ok())
-//             .is_some()
+// fn print_filenote(entry: &DirEntry) {
+//     println!("{}", entry.file_name().display());
 // }
 //
-// fn is_dirnote(entry: &DirEntry) -> bool {
-//     let path = entry.path();
-//     entry.file_type().is_some_and(|t| t.is_dir())
-//         && (path.join("main.md").is_file() || path.join("main.typ").is_file())
+// fn print_filenote_verbosely(entry: &DirEntry) {
+//     println!("{}", entry.path().display());
 // }
 //
-// fn is_category(entry: &DirEntry) -> bool {
-//     let path = entry.path();
-//     entry.file_type().is_some_and(|t| t.is_dir())
-//         && !path.join("main.md").is_file()
-//         && !path.join("main.typ").is_file()
+// fn print_dirnote(entry: &DirEntry) {
+//     println!("{}", entry.file_name().display());
 // }
 //
-// fn is_note_name(note_path: &Path) -> bool {
-//     note_path.components().count() == 1
+// fn print_dirnote_verbosely(entry: &DirEntry) {
+//     println!("{}", entry.path().display());
 // }
-
-fn print_filenote(entry: &DirEntry) {
-    println!("{}", entry.file_name().display());
-}
-
-fn print_filenote_verbosely(entry: &DirEntry) {
-    println!("{}", entry.path().display());
-}
-
-fn print_dirnote(entry: &DirEntry) {
-    println!("{}", entry.file_name().display());
-}
-
-fn print_dirnote_verbosely(entry: &DirEntry) {
-    println!("{}", entry.path().display());
-}
-
-fn print_category(entry: &DirEntry) {
-    println!("{}", entry.file_name().display());
-}
-
-fn print_category_verbosely(entry: &DirEntry) {
-    println!("{}", entry.path().display());
-}
+//
+// fn print_category(entry: &DirEntry) {
+//     println!("{}", entry.file_name().display());
+// }
+//
+// fn print_category_verbosely(entry: &DirEntry) {
+//     println!("{}", entry.path().display());
+// }
 
 fn print_tree(paths: &[impl AsRef<Path>]) {
     #[derive(Debug)]
@@ -792,27 +799,27 @@ mod tests {
     }
 
     /// Helper to build Cli::Preview arguments quickly
-    fn cli_preview_args(note_path: &str, note_dir: &str) -> Cli {
+    fn cli_preview_args(note_path: &str, note_root: &str) -> Cli {
         Cli::Preview {
             note_path: Some(note_path.to_string().into()),
-            note_dir: note_dir.to_string().into(),
+            note_root: note_root.to_string().into(),
             preview_typst: vec![],
             preview_markdown: vec![],
         }
     }
 
     /// Helper to build Cli::Search arguments quickly
-    fn cli_search_args(query: &str, note_dir: &str) -> Cli {
+    fn cli_search_args(query: &str, note_root: &str) -> Cli {
         Cli::Search {
             query: query.to_string(),
-            note_dir: note_dir.to_string().into(),
+            note_root: note_root.to_string().into(),
         }
     }
 
     /// Helper to build Cli::List arguments quickly
-    fn cli_list_args(note_dir: &str) -> Cli {
+    fn cli_list_args(note_root: &str) -> Cli {
         Cli::List {
-            note_dir: note_dir.to_string().into(),
+            note_root: note_root.to_string().into(),
             category: false,
             sort_by_category: true,
             sort_by_name: false,
@@ -872,10 +879,10 @@ mod tests {
     #[test]
     fn test_process_command_new_multi_file_md() {
         let tmp_dir = tempdir().unwrap();
-        let note_dir = tmp_dir.path().join("multi_md");
-        let main_file = note_dir.join("main.md");
+        let note_root = tmp_dir.path().join("multi_md");
+        let main_file = note_root.join("main.md");
 
-        let args = cli_new_args(note_dir.to_str().unwrap(), false, NoteType::Md);
+        let args = cli_new_args(note_root.to_str().unwrap(), false, NoteType::Md);
         let result = process_command(args);
         assert!(result.is_ok(), "Failed to create multi-file md note");
 
@@ -888,9 +895,9 @@ mod tests {
         );
 
         // The template directories (images, chapter, bibliography) should exist
-        let images_dir = note_dir.join("images");
-        let chapter_dir = note_dir.join("chapter");
-        let biblio_dir = note_dir.join("bibliography");
+        let images_dir = note_root.join("images");
+        let chapter_dir = note_root.join("chapter");
+        let biblio_dir = note_root.join("bibliography");
         assert!(images_dir.is_dir(), "images directory not created");
         assert!(chapter_dir.is_dir(), "chapter directory not created");
         assert!(biblio_dir.is_dir(), "bibliography directory not created");
@@ -899,13 +906,13 @@ mod tests {
     #[test]
     fn test_process_command_new_already_exists() {
         let tmp_dir = tempdir().unwrap();
-        let note_dir = tmp_dir.path().join("already_exists");
-        let main_file = note_dir.join("main.md");
-        fs::create_dir_all(&note_dir).unwrap();
+        let note_root = tmp_dir.path().join("already_exists");
+        let main_file = note_root.join("main.md");
+        fs::create_dir_all(&note_root).unwrap();
         fs::write(&main_file, "Existing note content").unwrap();
 
         // Attempt to create a note at the same location
-        let args = cli_new_args(note_dir.to_str().unwrap(), false, NoteType::Md);
+        let args = cli_new_args(note_root.to_str().unwrap(), false, NoteType::Md);
         let result = process_command(args);
 
         assert!(result.is_err(), "Expected error when note already exists");
@@ -920,13 +927,13 @@ mod tests {
     #[test]
     fn test_process_command_list() {
         let tmp_dir = tempdir().unwrap();
-        let note_dir = tmp_dir.path().to_path_buf();
+        let note_root = tmp_dir.path().to_path_buf();
 
         // create a couple of notes
-        let note1 = note_dir.join("TestNote1.md");
+        let note1 = note_root.join("TestNote1.md");
         fs::write(&note1, "# Test Note 1\n").unwrap();
 
-        let note2_dir = note_dir.join("TestNote2");
+        let note2_dir = note_root.join("TestNote2");
         fs::create_dir_all(&note2_dir).unwrap();
         fs::write(
             note2_dir.join("main.typ"),
@@ -935,7 +942,7 @@ mod tests {
         .unwrap();
 
         // run `List` command
-        let args = cli_list_args(note_dir.to_str().unwrap());
+        let args = cli_list_args(note_root.to_str().unwrap());
         let result = process_command(args);
         assert!(result.is_ok(), "Failed to list notes");
         // We can't easily capture the printed output here,
@@ -945,20 +952,20 @@ mod tests {
     #[test]
     fn test_process_command_search() {
         let tmp_dir = tempdir().unwrap();
-        let note_dir = tmp_dir.path().to_path_buf();
+        let note_root = tmp_dir.path().to_path_buf();
 
         // create a note with a known name
-        let note1_dir = note_dir.join("SearchedNote");
+        let note1_dir = note_root.join("SearchedNote");
         fs::create_dir_all(&note1_dir).unwrap();
         fs::write(note1_dir.join("main.md"), "# Searched Note").unwrap();
 
         // create a second note that we don't want to match
-        let note2_dir = note_dir.join("OtherNote");
+        let note2_dir = note_root.join("OtherNote");
         fs::create_dir_all(&note2_dir).unwrap();
         fs::write(note2_dir.join("main.md"), "# Other Note").unwrap();
 
         // run `Search` with partial name
-        let args = cli_search_args("SearchedNote", note_dir.to_str().unwrap());
+        let args = cli_search_args("SearchedNote", note_root.to_str().unwrap());
         let result = process_command(args);
         assert!(result.is_ok(), "Failed to search notes");
     }
@@ -987,11 +994,11 @@ mod tests {
     fn test_process_command_preview_directory_with_main_md() {
         // Similar to above, this will attempt to run "glow" or "tinymist".
         let tmp_dir = tempdir().unwrap();
-        let note_dir = tmp_dir.path().join("PreviewDir");
-        fs::create_dir_all(&note_dir).unwrap();
+        let note_root = tmp_dir.path().join("PreviewDir");
+        fs::create_dir_all(&note_root).unwrap();
 
         // create a main.md so it picks it up by default
-        fs::write(note_dir.join("main.md"), "# main.md for preview").unwrap();
+        fs::write(note_root.join("main.md"), "# main.md for preview").unwrap();
 
         let args = cli_preview_args("PreviewDir", tmp_dir.path().to_str().unwrap());
         let result = process_command(args);
@@ -1002,7 +1009,7 @@ mod tests {
     #[test]
     fn test_create_note_template_function() {
         let tmp_dir = tempdir().unwrap();
-        let note_dir = tmp_dir.path().join("templated_note");
+        let note_root = tmp_dir.path().join("templated_note");
 
         let mut sub_paths = HashMap::new();
         sub_paths.insert(
@@ -1018,10 +1025,10 @@ mod tests {
             main_md: Some("Md content".into()),
         };
 
-        let result = create_note_template(&note_dir, &template);
+        let result = create_note_template(&note_root, &template);
         assert!(result.is_ok(), "Failed to create note template");
 
-        let subdir = note_dir.join("subdir");
+        let subdir = note_root.join("subdir");
         let subfile = subdir.join("subfile.md");
         assert!(subdir.is_dir(), "Subdirectory was not created");
         assert!(subfile.is_file(), "Subfile.md was not created");
@@ -1135,30 +1142,30 @@ paths:
     #[test]
     fn test_search_function() {
         let tmp_dir = tempdir().unwrap();
-        let note_dir = tmp_dir.path();
+        let note_root = tmp_dir.path();
 
         // Create test data
-        let filenote = note_dir.join("file.md");
+        let filenote = note_root.join("file.md");
         fs::File::create(&filenote).unwrap();
 
-        let dirnote = note_dir.join("dirnote");
+        let dirnote = note_root.join("dirnote");
         fs::create_dir(&dirnote).unwrap();
         fs::File::create(dirnote.join("main.md")).unwrap();
 
-        let category = note_dir.join("category");
+        let category = note_root.join("category");
         fs::create_dir(&category).unwrap();
 
         // Search filenotes
-        let [filenotes, _, _] = search(note_dir, true, false, false, &|s| s == "file.md").unwrap();
+        let [filenotes, _, _] = search(note_root, true, false, false, &|s| s == "file.md").unwrap();
         assert_eq!(filenotes.len(), 1);
 
         // Search dirnotes
-        let [_, dirnotes, _] = search(note_dir, false, true, false, &|s| s == "dirnote").unwrap();
+        let [_, dirnotes, _] = search(note_root, false, true, false, &|s| s == "dirnote").unwrap();
         assert_eq!(dirnotes.len(), 1);
 
         // Search categories
         let [_, _, categories] =
-            search(note_dir, false, false, true, &|s| s == "category").unwrap();
+            search(note_root, false, false, true, &|s| s == "category").unwrap();
         assert_eq!(categories.len(), 1);
     }
 
@@ -1184,7 +1191,7 @@ paths:
 
         let args = Cli::Preview {
             note_path: Some(invalid_file.into()),
-            note_dir: tmp_dir.path().into(),
+            note_root: tmp_dir.path().into(),
             preview_typst: vec![],
             preview_markdown: vec![],
         };
@@ -1202,24 +1209,24 @@ paths:
         // Test filenote path
         let filenote = tmp_dir.path().join("note.md");
         fs::File::create(&filenote).unwrap();
-        assert_eq!(filenote.note_path().unwrap(), filenote);
+        assert_eq!(filenote.main_file_path().unwrap(), filenote);
 
         // Test dirnote path
         let dirnote = tmp_dir.path().join("dirnote");
         fs::create_dir(&dirnote).unwrap();
         fs::File::create(dirnote.join("main.md")).unwrap();
-        assert_eq!(dirnote.note_path().unwrap(), dirnote.join("main.md"));
+        assert_eq!(dirnote.main_file_path().unwrap(), dirnote.join("main.md"));
 
         // Test invalid dirnote
         let invalid_dirnote = tmp_dir.path().join("invalid_dirnote");
         fs::create_dir(&invalid_dirnote).unwrap();
-        assert!(invalid_dirnote.note_path().is_err());
+        assert!(invalid_dirnote.main_file_path().is_err());
     }
 
     #[test]
     fn test_template_creation() {
         let tmp_dir = tempdir().unwrap();
-        let note_dir = tmp_dir.path().join("templated_note");
+        let note_root = tmp_dir.path().join("templated_note");
 
         let mut sub_paths = HashMap::new();
         sub_paths.insert(
@@ -1235,10 +1242,10 @@ paths:
             main_md: Some("Md content".into()),
         };
 
-        create_note_template(&note_dir, &template).unwrap();
+        create_note_template(&note_root, &template).unwrap();
 
         // Verify directory structure
-        let subdir = note_dir.join("subdir");
+        let subdir = note_root.join("subdir");
         assert!(subdir.is_dir());
 
         // Verify file content

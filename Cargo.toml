@@ -16,6 +16,15 @@ serde_yml = "0.0.12"
 regex = "1.11.1"
 colored = "3.0.0"
 ignore = { git = "https://github.com/sqfzy/ripgrep.git", barnch = "master" }
+tuirealm = "2.0.3"
+# async-openai = "0.27.2"
+ureq = { version = "3.0.6", features = ["json"] }
+serde_json = "1.0.138"
+# curl = "0.4.47"
+
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+# attohttpc = { version = "0.28.4", features = ["json"] }
 
 [dev-dependencies]
 tempfile = "3.15.0"

@@ -1,0 +1,39 @@
+Frame 189: 201 bytes on wire (1608 bits), 201 bytes captured (1608 bits) on interface \Device\NPF_{AE476DCB-BF1F-453F-929D-A2C46F53AE99}, id 0
+Ethernet II, Src: Microsoft_7f:69:a3 (00:15:5d:7f:69:a3), Dst: Microsoft_57:f9:3d (00:15:5d:57:f9:3d)
+Internet Protocol Version 4, Src: 172.19.25.110, Dst: 198.18.0.177
+Transmission Control Protocol, Src Port: 43228, Dst Port: 80, Seq: 190, Ack: 1, Len: 135
+[2 Reassembled TCP Segments (324 bytes): #188(189), #189(135)]
+Hypertext Transfer Protocol
+    POST / HTTP/1.1\r\n
+    accept-encoding: gzip\r\n
+    content-length: 135\r\n
+    user-agent: ureq/3.0.5\r\n
+    accept: */*\r\n
+    host: www.baidu.com\r\n
+    content-type: application/json\r\n
+    authorization: Bearer YOUR_API_KEY\r\n
+    \r\n
+    [Full request URI: http://www.baidu.com/]
+    [HTTP request 1/1]
+    [Response in frame: 191]
+    File Data: 135 bytes
+JavaScript Object Notation: application/json
+
+Frame 109: 359 bytes on wire (2872 bits), 359 bytes captured (2872 bits) on interface \Device\NPF_{AE476DCB-BF1F-453F-929D-A2C46F53AE99}, id 0
+Ethernet II, Src: Microsoft_7f:69:a3 (00:15:5d:7f:69:a3), Dst: Microsoft_57:f9:3d (00:15:5d:57:f9:3d)
+Internet Protocol Version 4, Src: 172.19.25.110, Dst: 198.18.0.177
+Transmission Control Protocol, Src Port: 40098, Dst Port: 80, Seq: 1, Ack: 1, Len: 293
+Hypertext Transfer Protocol
+    POST / HTTP/1.1\r\n
+    Host: www.baidu.com\r\n
+    User-Agent: curl/8.12.0\r\n
+    Accept: */*\r\n
+    Content-Type: application/json\r\n
+    Authorization: Bearer API_KEY\r\n
+    Content-Length: 131\r\n
+    \r\n
+    [Full request URI: http://www.baidu.com/]
+    [HTTP request 1/1]
+    [Response in frame: 158]
+    File Data: 131 bytes
+JavaScript Object Notation: application/json

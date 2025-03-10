@@ -1,0 +1,9 @@
+{
+  "model": "gemini-2.0-flash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "中国的首都是哪里？"
+    }
+  ]
+}
